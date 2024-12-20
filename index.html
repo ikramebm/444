@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Streaming ESP32-CAM</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            text-align: center;
+        }
+        #videoCanvas {
+            max-width: 100%;
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+        }
+        button {
+            margin: 0 10px;
+            padding: 10px 15px;
+        }
+        #startStream {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        #stopStream {
+            background-color: #f44336;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <h1>Récepteur de Flux Vidéo</h1>
+    <div>
+        <button id="startStream">Démarrer Stream</button>
+        <button id="stopStream" disabled>Arrêter Stream</button>
+        <canvas id="videoCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <script>
+        const socket = new WebSocket('wss://ikrame-s-websocket-server.glitch.me');
+        const canvas = document.getElementById('videoCanvas');
+        const ctx = canvas.getContext('2d');
+        const startButton = document.getElementById('startStream');
+        const stopButton = document.getElementById('stopStream');
+
+        let frameChunks = new Map();
+        let currentFrameSize = 0;
+
+        function displayFrame(frameData) {
+            const blob = new Blob([frameData], { type: 'image/jpeg' });
+            const url = URL.createObjectURL(blob);
+            const img = new Image();
+            
+            img.onload = () => {
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                URL.revokeObjectURL(url);
+            };
+            
+            img.src = url;
+        }
+
+        socket.onopen = () => {
+            console.log('WebSocket connecté');
+            socket.send(JSON.stringify({type: 'register-web'}));
+        };
+
+        startButton.addEventListener('click', () => {
+            console.log('Démarrage du stream demandé');
+            socket.send(JSON.stringify({type: 'start-stream'}));
+            startButton.disabled = true;
+            stopButton.disabled = false;
+        });
+
+        stopButton.addEventListener('click', () => {
+            socket.send(JSON.stringify({type: 'stop-stream'}));
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        });
+
+        socket.addEventListener('message', (event) => {
+            // Si c'est un message JSON
+            if (typeof event.data === 'string') {
+                const message = JSON.parse(event.data);
+                console.log('Message reçu:', message);
+
+                if (message.type === 'video-size') {
+                    currentFrameSize = message.size;
+                    frameChunks.clear();
+                }
+            }
+            // Si c'est un chunk de données binaires
+            else if (event.data instanceof Blob) {
+                event.data.arrayBuffer().then(buffer => {
+                    const data = new DataView(buffer);
+                    const offset = data.getUint32(0, true);
+                    const chunk = new Uint8Array(buffer.slice(8));
+
+                    frameChunks.set(offset, chunk);
+
+                    // Vérifier si nous avons tous les chunks
+                    let completeFrame = new Uint8Array(currentFrameSize);
+                    let isComplete = true;
+                    let totalSize = 0;
+
+                    for (let [offset, chunk] of frameChunks) {
+                        if (offset + chunk.length > currentFrameSize) {
+                            isComplete = false;
+                            break;
+                        }
+                        completeFrame.set(chunk, offset);
+                        totalSize += chunk.length;
+                    }
+
+                    if (isComplete && totalSize === currentFrameSize) {
+                        displayFrame(completeFrame);
+                        frameChunks.clear();
+                    }
+                });
+            }
+        });
+
+        // Gestion des erreurs
+        socket.onerror = (error) => {
+            console.error('Erreur WebSocket:', error);
+        };
+
+        socket.onclose = () => {
+            console.log('WebSocket déconnecté');
+            startButton.disabled = false;
+            stopButton.disabled = true;
+        };
+    </script>
+</body>
+</html>
